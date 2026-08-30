@@ -338,10 +338,19 @@ export const aiConversations = pgTable(
   },
   (table) => [
     index("ai_conversations_event_id_idx").on(table.eventId),
-    pgPolicy("ai_conversations_all_own_event", {
-      for: "all",
+    // No update/delete policy: a `for: "all"` policy here would let a user
+    // delete their own conversation, which cascades to ai_messages and
+    // erases the immutable history that ai_messages' own RLS protects.
+    // LGPD-driven deletion goes through a privileged, audited Server Action
+    // instead.
+    pgPolicy("ai_conversations_select_own_event", {
+      for: "select",
       to: authenticatedRole,
       using: sql`exists (select 1 from ${events} where ${events.id} = ${table.eventId} and ${events.userId} = ${authenticatedUserId})`,
+    }),
+    pgPolicy("ai_conversations_insert_own_event", {
+      for: "insert",
+      to: authenticatedRole,
       withCheck: sql`exists (select 1 from ${events} where ${events.id} = ${table.eventId} and ${events.userId} = ${authenticatedUserId})`,
     }),
   ],
@@ -374,15 +383,16 @@ export const aiMessages = pgTable(
         where ${aiConversations.id} = ${table.conversationId} and ${events.userId} = ${authenticatedUserId}
       )`,
     }),
-    // Only `role = 'user'` can be inserted by the client. Assistant/system/
-    // tool messages are written by a privileged (service-role) Server
-    // Action after calling the model, so history/tool calls can't be
-    // forged from the client. No update/delete policy — messages are
-    // immutable once written.
+    // Only `role = 'user'` with no tool_calls can be inserted by the
+    // client. Assistant/system/tool messages — and any tool_calls payload —
+    // are written by a privileged (service-role) Server Action after
+    // calling the model, so history/tool calls can't be forged from the
+    // client. No update/delete policy — messages are immutable once
+    // written.
     pgPolicy("ai_messages_insert_own_user_message", {
       for: "insert",
       to: authenticatedRole,
-      withCheck: sql`${table.role} = 'user' and exists (
+      withCheck: sql`${table.role} = 'user' and ${table.toolCalls} is null and exists (
         select 1 from ${aiConversations}
         join ${events} on ${events.id} = ${aiConversations.eventId}
         where ${aiConversations.id} = ${table.conversationId} and ${events.userId} = ${authenticatedUserId}
@@ -401,9 +411,15 @@ export const vendorStatusEnum = pgEnum("vendor_status", ["pendente", "aprovado",
 // row's OLD vs NEW value, so an owner with UPDATE on `vendors` could set
 // their own `status` straight to 'aprovado' if it lived there. By keeping it
 // in a table the owner has no insert/update policy for, only the service
-// role (moderation tooling) can ever change it — the vendor-creation Server
-// Action must insert this row (status = 'pendente') using the service-role
-// client, alongside the `vendors` row itself.
+// role (moderation tooling) can ever change it.
+//
+// The vendor-creation Server Action must insert this row (status =
+// 'pendente') and the `vendors` row in the same server-side transaction,
+// using the service-role client only after explicitly validating the
+// caller's identity — never split across two requests. Otherwise a `vendors`
+// insert without a matching `vendor_moderation` row is possible: it won't
+// become public (the select policy requires an 'aprovado' row to exist),
+// but it leaves an orphaned, unmoderatable record behind.
 export const vendorModeration = pgTable(
   "vendor_moderation",
   {
