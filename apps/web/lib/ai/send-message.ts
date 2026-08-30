@@ -1,6 +1,5 @@
 "use server";
 
-import type Anthropic from "@anthropic-ai/sdk";
 import { aiConversations, aiMessages, events } from "@gradual/db-schema";
 import { and, eq } from "drizzle-orm";
 
@@ -12,6 +11,7 @@ import {
   type ChatMessage,
 } from "@/lib/ai/conversation";
 import { generateAssistantReply } from "@/lib/ai/generate-reply";
+import type { AssistantMessage } from "@/lib/ai/provider";
 import { buildSystemPrompt } from "@/lib/ai/system-prompt";
 import { createToolExecutor } from "@/lib/ai/tool-executor";
 import { db } from "@/lib/db/client";
@@ -38,7 +38,7 @@ export async function sendAssistantMessage(eventId: string, userMessage: string)
   await insertUserMessage(supabase, conversationId, userMessage);
 
   const priorMessages = await getMessagesForDisplay(supabase, conversationId);
-  const history: Anthropic.MessageParam[] = priorMessages
+  const history: AssistantMessage[] = priorMessages
     .filter((message): message is ChatMessage & { role: "user" | "assistant" } =>
       message.role === "user" || message.role === "assistant",
     )

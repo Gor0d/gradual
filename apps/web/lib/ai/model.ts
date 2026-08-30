@@ -1,9 +1,18 @@
 /**
- * Model/provider choice is still under discussion between the user and
- * Codex (comparing hosted Claude models against local/self-hosted
- * alternatives) — kept as a single env-driven constant so settling on one
- * never requires touching this file's callers. Defaults to Claude Opus 5
- * per Anthropic's own guidance (don't downgrade for cost without an
- * explicit decision to do so).
+ * Provider/model choice is env-driven so comparing Groq vs. Anthropic (and
+ * later, local models) never requires touching a caller — only .env.local.
+ * Groq is the development default: fast and free for iterating on the tool
+ * loop; Anthropic stays available as an opt-in adapter (AI_PROVIDER=anthropic).
  */
-export const ASSISTANT_MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-5";
+export function getProviderName(): "groq" | "anthropic" {
+  return process.env.AI_PROVIDER === "anthropic" ? "anthropic" : "groq";
+}
+
+const DEFAULT_MODEL_BY_PROVIDER = {
+  groq: "openai/gpt-oss-20b",
+  anthropic: "claude-opus-5",
+} as const;
+
+export function getModelId(): string {
+  return process.env.AI_MODEL ?? DEFAULT_MODEL_BY_PROVIDER[getProviderName()];
+}
