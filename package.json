@@ -14,6 +14,7 @@
     "db:generate": "npm run db:generate --workspace @gradual/db-schema",
     "db:migrate": "npm run db:migrate --workspace @gradual/db-schema",
     "db:studio": "npm run db:studio --workspace @gradual/db-schema",
+    "db:seed": "npm run db:seed --workspace @gradual/db-schema",
     "supabase": "supabase"
   },
   "engines": {
