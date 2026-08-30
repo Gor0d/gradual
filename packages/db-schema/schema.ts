@@ -721,21 +721,38 @@ export const reviews = pgTable(
 
 // "Solicitar orçamento" from the marketplace. Contact info is captured
 // explicitly on the row (contact_name + at least one of contact_email/
-// contact_phone) instead of joining through `users` — users_select_own
-// means a vendor owner could never read the requester's email/phone
-// through the users table, so there'd be no way to reply otherwise.
+// contact_phone, matching contact_preference) instead of joining through
+// `users` — users_select_own means a vendor owner could never read the
+// requester's email/phone through the users table, so there'd be no way
+// to reply otherwise.
 //
-// message/contact_* are immutable after creation by design: the vendor
-// owner's update policy only lets them change `status`, and — because RLS
-// can't restrict which columns an UPDATE touches, only which rows — that's
-// enforced with a column-level GRANT (see the migration's manually-added
-// `GRANT UPDATE (status)`, following the same pattern as organizations'
-// REVOKE/GRANT in migration 0001) rather than by the policy alone.
+// message/contact_*/contact_preference are immutable after creation by
+// design: the vendor owner's update policy only lets them change `status`,
+// and — because RLS can't restrict which columns an UPDATE touches, only
+// which rows — that's enforced with a column-level GRANT, not the policy:
+//   REVOKE ALL ON TABLE public.vendor_inquiries FROM anon, authenticated;
+//   GRANT SELECT, INSERT ON TABLE public.vendor_inquiries TO authenticated;
+//   GRANT UPDATE (status) ON TABLE public.vendor_inquiries TO authenticated;
+// (added by hand to the migration once generated, same as organizations'
+// REVOKE/GRANT in migration 0001 — Supabase no longer auto-exposes new
+// tables, but that's a separate layer from RLS and doesn't replace this).
+//
+// No updated_at: the column-level grant above means the client can never
+// set it anyway (only `status` is writable), and there's no trigger to
+// bump it server-side, so a column no one can correctly maintain is worse
+// than no column. A status-history table is the auditable way to add this
+// back later if needed.
 export const vendorInquiryStatusEnum = pgEnum("vendor_inquiry_status", [
   "new",
   "viewed",
   "contacted",
   "closed",
+]);
+
+export const vendorInquiryContactPreferenceEnum = pgEnum("vendor_inquiry_contact_preference", [
+  "email",
+  "phone",
+  "whatsapp",
 ]);
 
 export const vendorInquiries = pgTable(
@@ -756,9 +773,9 @@ export const vendorInquiries = pgTable(
     contactName: text("contact_name").notNull(),
     contactEmail: text("contact_email"),
     contactPhone: text("contact_phone"),
+    contactPreference: vendorInquiryContactPreferenceEnum("contact_preference").notNull(),
     status: vendorInquiryStatusEnum("status").notNull().default("new"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("vendor_inquiries_vendor_id_created_at_idx").on(table.vendorId, table.createdAt.desc()),
@@ -769,9 +786,29 @@ export const vendorInquiries = pgTable(
     index("vendor_inquiries_event_id_idx")
       .on(table.eventId)
       .where(sql`${table.eventId} is not null`),
+    check("vendor_inquiries_message_length", sql`char_length(trim(${table.message})) between 1 and 2000`),
+    check(
+      "vendor_inquiries_contact_name_length",
+      sql`char_length(trim(${table.contactName})) between 1 and 120`,
+    ),
+    check(
+      "vendor_inquiries_contact_email_length",
+      sql`${table.contactEmail} is null or char_length(trim(${table.contactEmail})) between 1 and 254`,
+    ),
+    check(
+      "vendor_inquiries_contact_phone_length",
+      sql`${table.contactPhone} is null or char_length(trim(${table.contactPhone})) between 8 and 32`,
+    ),
+    // Combined with the two length checks above (a non-null value can't be
+    // empty/whitespace-only), this guarantees at least one real contact.
     check(
       "vendor_inquiries_contact_reachable",
       sql`${table.contactEmail} is not null or ${table.contactPhone} is not null`,
+    ),
+    check(
+      "vendor_inquiries_contact_preference_matches",
+      sql`(${table.contactPreference} = 'email' and ${table.contactEmail} is not null)
+        or (${table.contactPreference} in ('phone', 'whatsapp') and ${table.contactPhone} is not null)`,
     ),
     pgPolicy("vendor_inquiries_select_own_or_vendor_owner", {
       for: "select",
@@ -783,9 +820,14 @@ export const vendorInquiries = pgTable(
     pgPolicy("vendor_inquiries_insert_own", {
       for: "insert",
       to: authenticatedRole,
-      withCheck: sql`${table.requesterUserId} = ${authenticatedUserId} and (
-        ${table.eventId} is null or exists (select 1 from ${events} where ${events.id} = ${table.eventId} and ${events.userId} = ${authenticatedUserId})
-      )`,
+      withCheck: sql`${table.requesterUserId} = ${authenticatedUserId}
+        and ${table.status} = 'new'
+        and (
+          ${table.eventId} is null or exists (select 1 from ${events} where ${events.id} = ${table.eventId} and ${events.userId} = ${authenticatedUserId})
+        )
+        and exists (
+          select 1 from ${vendorModeration} where ${vendorModeration.vendorId} = ${table.vendorId} and ${vendorModeration.status} = 'aprovado'
+        )`,
     }),
     // No update/delete policy for the requester — a sent inquiry is final
     // on their side. The vendor owner's update policy is intentionally
