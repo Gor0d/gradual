@@ -76,6 +76,8 @@ Começar com `apps/web` único; `packages/shared-types` e `packages/db-schema` d
 
 **Auth e Multi-tenancy**: Supabase Auth (e-mail/senha + Google OAuth; Apple na Fase 4). `organization_id` em `events`/`vendors` reforçado por RLS policies. Formando convidado por organizadora mantém propriedade dos próprios dados (LGPD).
 
+Na Fase 2, `organization_members` usa os papéis `owner`, `admin` e `member`. Memberships são autovisíveis via RLS; criação da organização e gestão de membros são operações privilegiadas e transacionais, enquanto atualização do perfil/branding passa pelo cliente Supabase e é limitada a `owner`/`admin`. A associação de `events`/`vendors` a organizações só será liberada quando o fluxo de convite e propriedade do formando estiver definido.
+
 **Geolocalização**: geo do browser ou cidade do onboarding como fallback; ranking combinando distância + score de custo-benefício (preço normalizado + nota média + nº avaliações). Mapbox vs Google Maps para toggle mapa/lista — decisão a tomar mais perto da Fase 2 (pode adiar no MVP).
 
 **Matching por categoria**: `preco_fixo` (beca/anel — cotação quase instantânea), `sob_consulta` (fotógrafo/buffet/local — briefing → orçamento via `bookings`/`booking_messages`).

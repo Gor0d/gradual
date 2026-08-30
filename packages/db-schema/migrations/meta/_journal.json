@@ -8,6 +8,13 @@
       "when": 1788061419295,
       "tag": "0000_mature_susan_delgado",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788063298371,
+      "tag": "0001_lean_tarantula",
+      "breakpoints": true
     }
   ]
 }

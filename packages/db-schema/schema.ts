@@ -60,20 +60,93 @@ export const users = pgTable(
 // Reused across every policy below instead of repeating the subquery.
 const authenticatedUserId = sql`(select ${users.id} from ${users} where ${users.authUserId} = ${authUid})`;
 
-// Minimal placeholder for the future B2B tenant. RLS is enabled with no
-// policies for now, so only the service role can touch this table — Codex's
-// Fase 2 PR adds `organization_members` and membership-based policies here.
-// Until then, `events.organization_id`/`vendors.organization_id` are forced
-// to null for regular users (see their insert/update policies below), so no
-// row can be pre-associated with a tenant before membership checks exist.
+// Tenant membership is intentionally self-readable. This is enough for RLS
+// checks without exposing the organization roster; member administration is
+// introduced through privileged, explicitly authorized server operations.
+export const organizationMemberRoleEnum = pgEnum("organization_member_role", [
+  "owner",
+  "admin",
+  "member",
+]);
+
+export const organizationMembers = pgTable(
+  "organization_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references((): AnyPgColumn => organizations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: organizationMemberRoleEnum("role").notNull().default("member"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("organization_members_organization_id_user_id_idx").on(
+      table.organizationId,
+      table.userId,
+    ),
+    index("organization_members_user_id_idx").on(table.userId),
+    pgPolicy("organization_members_select_own", {
+      for: "select",
+      to: authenticatedRole,
+      using: sql`${table.userId} = ${authenticatedUserId}`,
+    }),
+  ],
+).enableRLS();
+
+export type OrganizationBranding = {
+  logoUrl?: string;
+  primaryColor?: string;
+};
+
+// Creation/deletion and membership writes are privileged operations through
+// Drizzle after server-side authorization. Regular members only read their
+// tenant; owner/admin may update its profile through Supabase so RLS applies.
 export const organizations = pgTable(
   "organizations",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
     slug: text("slug").notNull().unique(),
+    branding: jsonb("branding").$type<OrganizationBranding>().notNull().default(sql`'{}'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
+  (table) => [
+    check("organizations_name_not_blank", sql`char_length(trim(${table.name})) > 0`),
+    check(
+      "organizations_slug_format",
+      sql`${table.slug} ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$' and char_length(${table.slug}) between 3 and 63`,
+    ),
+    pgPolicy("organizations_select_member", {
+      for: "select",
+      to: authenticatedRole,
+      using: sql`exists (
+        select 1 from ${organizationMembers}
+        where ${organizationMembers.organizationId} = ${table.id}
+          and ${organizationMembers.userId} = ${authenticatedUserId}
+      )`,
+    }),
+    pgPolicy("organizations_update_admin", {
+      for: "update",
+      to: authenticatedRole,
+      using: sql`exists (
+        select 1 from ${organizationMembers}
+        where ${organizationMembers.organizationId} = ${table.id}
+          and ${organizationMembers.userId} = ${authenticatedUserId}
+          and ${organizationMembers.role} in ('owner', 'admin')
+      )`,
+      withCheck: sql`exists (
+        select 1 from ${organizationMembers}
+        where ${organizationMembers.organizationId} = ${table.id}
+          and ${organizationMembers.userId} = ${authenticatedUserId}
+          and ${organizationMembers.role} in ('owner', 'admin')
+      )`,
+    }),
+  ],
 ).enableRLS();
 
 // ---------------------------------------------------------------------------
