@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 import { getModelId } from "@/lib/ai/model";
-import type { AssistantProvider, ToolCallRecord } from "@/lib/ai/provider";
+import { AssistantProviderError, type AssistantProvider, type ToolCallRecord } from "@/lib/ai/provider";
 import { ASSISTANT_TOOLS } from "@/lib/ai/tools";
 
 const MAX_ITERATIONS = 6;
@@ -42,50 +42,58 @@ export const generateReplyWithAnthropic: AssistantProvider = async (
   }));
   const toolCalls: ToolCallRecord[] = [];
 
-  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-    const response = await anthropic.messages.create({
-      model: getModelId(),
-      max_tokens: 2048,
-      system: systemPrompt,
-      tools: ANTHROPIC_TOOLS,
-      messages,
-    });
-
-    if (response.stop_reason === "pause_turn") {
-      messages.push({ role: "assistant", content: response.content });
-      continue;
-    }
-
-    const toolUseBlocks = response.content.filter(
-      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
-    );
-
-    if (toolUseBlocks.length === 0) {
-      const textBlock = response.content.find(
-        (block): block is Anthropic.TextBlock => block.type === "text",
-      );
-      return { text: textBlock?.text ?? "", toolCalls };
-    }
-
-    messages.push({ role: "assistant", content: response.content });
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-    for (const block of toolUseBlocks) {
-      let result: unknown;
-      try {
-        result = await executeTool(block.name, block.input);
-      } catch (error) {
-        result = { error: error instanceof Error ? error.message : "Erro desconhecido" };
-      }
-      toolCalls.push({ name: block.name, input: block.input, result });
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: JSON.stringify(result),
+  try {
+    for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+      const response = await anthropic.messages.create({
+        model: getModelId(),
+        max_tokens: 2048,
+        system: systemPrompt,
+        tools: ANTHROPIC_TOOLS,
+        messages,
       });
-    }
 
-    messages.push({ role: "user", content: toolResults });
+      if (response.stop_reason === "pause_turn") {
+        messages.push({ role: "assistant", content: response.content });
+        continue;
+      }
+
+      const toolUseBlocks = response.content.filter(
+        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
+      );
+
+      if (toolUseBlocks.length === 0) {
+        const textBlock = response.content.find(
+          (block): block is Anthropic.TextBlock => block.type === "text",
+        );
+        return { text: textBlock?.text ?? "", toolCalls };
+      }
+
+      messages.push({ role: "assistant", content: response.content });
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const block of toolUseBlocks) {
+        let result: unknown;
+        try {
+          result = await executeTool(block.name, block.input);
+        } catch (error) {
+          result = { error: error instanceof Error ? error.message : "Erro desconhecido" };
+        }
+        toolCalls.push({ name: block.name, input: block.input, result });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: JSON.stringify(result),
+        });
+      }
+
+      messages.push({ role: "user", content: toolResults });
+    }
+  } catch (error) {
+    throw new AssistantProviderError(
+      error instanceof Error ? error.message : "Erro desconhecido no provedor Anthropic",
+      toolCalls,
+      { cause: error },
+    );
   }
 
   return {

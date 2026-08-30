@@ -5,10 +5,11 @@ import type {
 } from "groq-sdk/resources/chat/completions";
 
 import { getModelId } from "@/lib/ai/model";
-import type { AssistantProvider, ToolCallRecord } from "@/lib/ai/provider";
+import { AssistantProviderError, type AssistantProvider, type ToolCallRecord } from "@/lib/ai/provider";
 import { ASSISTANT_TOOLS } from "@/lib/ai/tools";
 
 const MAX_ITERATIONS = 6;
+const MAX_COMPLETION_TOKENS = 2048;
 
 let client: Groq | null = null;
 
@@ -44,44 +45,53 @@ export const generateReplyWithGroq: AssistantProvider = async (systemPrompt, his
   ];
   const toolCalls: ToolCallRecord[] = [];
 
-  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-    const response = await groq.chat.completions.create({
-      model: getModelId(),
-      messages,
-      tools: GROQ_TOOLS,
-    });
-
-    const message = response.choices[0]?.message;
-    if (!message) {
-      break;
-    }
-
-    if (!message.tool_calls || message.tool_calls.length === 0) {
-      return { text: message.content ?? "", toolCalls };
-    }
-
-    messages.push({
-      role: "assistant",
-      content: message.content,
-      tool_calls: message.tool_calls,
-    });
-
-    for (const toolCall of message.tool_calls) {
-      let result: unknown;
-      let input: unknown;
-      try {
-        input = JSON.parse(toolCall.function.arguments) as unknown;
-        result = await executeTool(toolCall.function.name, input);
-      } catch (error) {
-        result = { error: error instanceof Error ? error.message : "Erro desconhecido" };
-      }
-      toolCalls.push({ name: toolCall.function.name, input, result });
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: JSON.stringify(result),
+  try {
+    for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+      const response = await groq.chat.completions.create({
+        model: getModelId(),
+        messages,
+        tools: GROQ_TOOLS,
+        max_completion_tokens: MAX_COMPLETION_TOKENS,
       });
+
+      const message = response.choices[0]?.message;
+      if (!message) {
+        break;
+      }
+
+      if (!message.tool_calls || message.tool_calls.length === 0) {
+        return { text: message.content ?? "", toolCalls };
+      }
+
+      messages.push({
+        role: "assistant",
+        content: message.content,
+        tool_calls: message.tool_calls,
+      });
+
+      for (const toolCall of message.tool_calls) {
+        let result: unknown;
+        let input: unknown;
+        try {
+          input = JSON.parse(toolCall.function.arguments) as unknown;
+          result = await executeTool(toolCall.function.name, input);
+        } catch (error) {
+          result = { error: error instanceof Error ? error.message : "Erro desconhecido" };
+        }
+        toolCalls.push({ name: toolCall.function.name, input, result });
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: JSON.stringify(result),
+        });
+      }
     }
+  } catch (error) {
+    throw new AssistantProviderError(
+      error instanceof Error ? error.message : "Erro desconhecido no provedor Groq",
+      toolCalls,
+      { cause: error },
+    );
   }
 
   return {

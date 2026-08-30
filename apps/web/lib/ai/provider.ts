@@ -24,3 +24,19 @@ export type AssistantProvider = (
   history: AssistantMessage[],
   executeTool: ToolExecutor,
 ) => Promise<GeneratedReply>;
+
+/**
+ * Thrown by an adapter when the provider call itself fails (network, auth,
+ * rate limit) mid-loop — carries whatever tools already ran (and already
+ * mutated data) before the failure, so the dispatcher can report them
+ * instead of silently dropping the record of a mutation that did happen.
+ */
+export class AssistantProviderError extends Error {
+  toolCalls: ToolCallRecord[];
+
+  constructor(message: string, toolCalls: ToolCallRecord[], options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AssistantProviderError";
+    this.toolCalls = toolCalls;
+  }
+}

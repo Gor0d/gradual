@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useTransition, type FormEvent } from "react";
+import { useState, useTransition, type ComponentPropsWithoutRef, type FormEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +12,24 @@ import { cn } from "@/lib/utils";
 type AssistantChatProps = {
   eventId: string;
   initialMessages: ChatMessage[];
+};
+
+// Minimal spacing for the markdown elements the assistant actually uses
+// (lists, tables, emphasis) — no @tailwindcss/typography just for a chat
+// bubble. No rehype-raw: the model's own text is never rendered as HTML.
+const MARKDOWN_COMPONENTS = {
+  p: (props: ComponentPropsWithoutRef<"p">) => <p className="[&:not(:first-child)]:mt-2" {...props} />,
+  ul: (props: ComponentPropsWithoutRef<"ul">) => <ul className="ml-4 list-disc space-y-1" {...props} />,
+  ol: (props: ComponentPropsWithoutRef<"ol">) => <ol className="ml-4 list-decimal space-y-1" {...props} />,
+  table: (props: ComponentPropsWithoutRef<"table">) => (
+    <div className="mt-2 overflow-x-auto">
+      <table className="w-full border-collapse text-left text-sm" {...props} />
+    </div>
+  ),
+  th: (props: ComponentPropsWithoutRef<"th">) => (
+    <th className="border-b border-border px-2 py-1 font-medium" {...props} />
+  ),
+  td: (props: ComponentPropsWithoutRef<"td">) => <td className="border-b border-border px-2 py-1" {...props} />,
 };
 
 export function AssistantChat({ eventId, initialMessages }: AssistantChatProps) {
@@ -59,7 +79,13 @@ export function AssistantChat({ eventId, initialMessages }: AssistantChatProps) 
                 : "bg-muted text-muted-foreground",
             )}
           >
-            {message.content}
+            {message.role === "assistant" ? (
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                {message.content}
+              </ReactMarkdown>
+            ) : (
+              message.content
+            )}
           </div>
         ))}
         {isPending ? <p className="text-sm text-muted-foreground">Pensando...</p> : null}

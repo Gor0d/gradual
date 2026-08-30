@@ -65,8 +65,8 @@ export function RequestQuoteDialog({
           vendorId,
           contactName,
           contactPreference,
-          contactEmail: contactPreference === "email" ? contactEmail : contactEmail || undefined,
-          contactPhone: contactPreference !== "email" ? contactPhone : contactPhone || undefined,
+          contactEmail: contactPreference === "email" ? contactEmail.trim() : undefined,
+          contactPhone: contactPreference !== "email" ? contactPhone.trim() : undefined,
           message,
         });
         setSent(true);
