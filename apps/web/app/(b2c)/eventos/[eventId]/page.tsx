@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { AddToCalendar } from "@/components/checklist/add-to-calendar";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireCurrentUser } from "@/lib/auth/require-user";
 import { cn } from "@/lib/utils";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -66,6 +67,18 @@ export default async function EventPage({ params }: EventPageProps) {
             {event.event_date ? dateFormatter.format(new Date(event.event_date)) : "Data a definir"}
             {event.city ? ` — ${event.city}${event.state ? `/${event.state}` : ""}` : ""}
           </p>
+          {event.event_date ? (
+            <div className="-ml-3 mt-1">
+              <AddToCalendar
+                id={event.id}
+                event={{
+                  title: event.title,
+                  date: event.event_date,
+                  location: event.city ? `${event.city}${event.state ? `/${event.state}` : ""}` : null,
+                }}
+              />
+            </div>
+          ) : null}
         </div>
         <Button asChild variant="outline">
           <Link href="/assistente">Falar com o assistente</Link>
@@ -91,6 +104,14 @@ export default async function EventPage({ params }: EventPageProps) {
               </CardHeader>
               {task.description ? (
                 <CardContent className="pt-0 text-sm text-muted-foreground">{task.description}</CardContent>
+              ) : null}
+              {!isCancelled && task.due_date ? (
+                <CardFooter className="-ml-3 pt-0">
+                  <AddToCalendar
+                    id={task.id}
+                    event={{ title: task.title, description: task.description, date: task.due_date }}
+                  />
+                </CardFooter>
               ) : null}
             </Card>
           );
