@@ -1,6 +1,9 @@
-import { PlaceholderPage } from "@/components/placeholder-page";
+import { AuthForm } from "@/components/auth/auth-form";
 
 export default function SignInPage() {
-  return <PlaceholderPage title="Autenticação" />;
+  return (
+    <main className="grid min-h-screen place-items-center bg-background px-6 text-foreground">
+      <AuthForm />
+    </main>
+  );
 }
-

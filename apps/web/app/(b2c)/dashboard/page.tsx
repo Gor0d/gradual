@@ -1,6 +1,12 @@
-import { PlaceholderPage } from "@/components/placeholder-page";
+import { redirect } from "next/navigation";
 
-export default function DashboardPage() {
-  return <PlaceholderPage title="Dashboard" />;
+import { requireCurrentUser } from "@/lib/auth/require-user";
+import { getPrimaryEventId } from "@/lib/events/get-primary-event";
+
+/** MVP has one event per formando — this is a router, not a real dashboard. */
+export default async function DashboardPage() {
+  await requireCurrentUser();
+
+  const eventId = await getPrimaryEventId();
+  redirect(eventId ? `/eventos/${eventId}` : "/onboarding");
 }
-
