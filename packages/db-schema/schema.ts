@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   check,
   index,
@@ -59,11 +60,12 @@ export const users = pgTable(
 // Reused across every policy below instead of repeating the subquery.
 const authenticatedUserId = sql`(select ${users.id} from ${users} where ${users.authUserId} = ${authUid})`;
 
-// Minimal placeholder for the future B2B tenant. `events`/`vendors` already
-// carry a nullable `organization_id` so Fase 2 doesn't need a retrofit, but
-// membership-based RLS (via `organization_members`) is added by Codex when
-// that table lands — see docs/architecture.md. RLS is enabled with no
-// policies for now, so only the service role can touch this table.
+// Minimal placeholder for the future B2B tenant. RLS is enabled with no
+// policies for now, so only the service role can touch this table — Codex's
+// Fase 2 PR adds `organization_members` and membership-based policies here.
+// Until then, `events.organization_id`/`vendors.organization_id` are forced
+// to null for regular users (see their insert/update policies below), so no
+// row can be pre-associated with a tenant before membership checks exist.
 export const organizations = pgTable(
   "organizations",
   {
@@ -134,16 +136,19 @@ export const events = pgTable(
       to: authenticatedRole,
       using: sql`${table.userId} = ${authenticatedUserId}`,
     }),
+    // MVP: no membership validation exists yet, so a regular user can never
+    // attach their event to an organization — that would let the row
+    // surface in the wrong tenant once Fase 2 ships org-scoped access.
     pgPolicy("events_insert_own", {
       for: "insert",
       to: authenticatedRole,
-      withCheck: sql`${table.userId} = ${authenticatedUserId}`,
+      withCheck: sql`${table.userId} = ${authenticatedUserId} and ${table.organizationId} is null`,
     }),
     pgPolicy("events_update_own", {
       for: "update",
       to: authenticatedRole,
-      using: sql`${table.userId} = ${authenticatedUserId}`,
-      withCheck: sql`${table.userId} = ${authenticatedUserId}`,
+      using: sql`${table.userId} = ${authenticatedUserId} and ${table.organizationId} is null`,
+      withCheck: sql`${table.userId} = ${authenticatedUserId} and ${table.organizationId} is null`,
     }),
     pgPolicy("events_delete_own", {
       for: "delete",
@@ -222,6 +227,9 @@ export const vendorMatchingModelEnum = pgEnum("vendor_matching_model", [
 
 // Catalog, not an enum — see event_types. `event_type_id` is nullable so a
 // category can apply across verticals once Fase 3 adds more event types.
+// Two partial unique indexes (instead of one over both columns) because a
+// plain composite unique index treats every NULL event_type_id as distinct,
+// so it would silently allow duplicate slugs among global categories.
 export const vendorCategories = pgTable(
   "vendor_categories",
   {
@@ -233,7 +241,12 @@ export const vendorCategories = pgTable(
     isActive: boolean("is_active").notNull().default(true),
   },
   (table) => [
-    uniqueIndex("vendor_categories_event_type_id_slug_idx").on(table.eventTypeId, table.slug),
+    uniqueIndex("vendor_categories_event_type_id_slug_idx")
+      .on(table.eventTypeId, table.slug)
+      .where(sql`${table.eventTypeId} is not null`),
+    uniqueIndex("vendor_categories_global_slug_idx")
+      .on(table.slug)
+      .where(sql`${table.eventTypeId} is null`),
     pgPolicy("vendor_categories_select_all", {
       for: "select",
       to: [anonRole, authenticatedRole],
@@ -254,17 +267,18 @@ export const checklistTemplateItems = pgTable(
     }),
     title: text("title").notNull(),
     description: text("description"),
-    // Negative offset means "before the event"; positive allows post-evento
-    // items (ex: avaliar fornecedores) without a separate column.
+    // Positive = days before the event, 0 = day of the event, negative =
+    // after the event (ex: "avaliar fornecedores"), all without a separate
+    // column.
     offsetDaysBeforeEvent: integer("offset_days_before_event").notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
   },
   (table) => [
     index("checklist_template_items_template_id_idx").on(table.templateId),
-    pgPolicy("checklist_template_items_select_all", {
+    pgPolicy("checklist_template_items_select_active_template", {
       for: "select",
       to: authenticatedRole,
-      using: sql`true`,
+      using: sql`exists (select 1 from ${checklistTemplates} where ${checklistTemplates.id} = ${table.templateId} and ${checklistTemplates.isActive} = true)`,
     }),
   ],
 ).enableRLS();
@@ -351,15 +365,24 @@ export const aiMessages = pgTable(
   },
   (table) => [
     index("ai_messages_conversation_id_idx").on(table.conversationId),
-    pgPolicy("ai_messages_all_own_conversation", {
-      for: "all",
+    pgPolicy("ai_messages_select_own_conversation", {
+      for: "select",
       to: authenticatedRole,
       using: sql`exists (
         select 1 from ${aiConversations}
         join ${events} on ${events.id} = ${aiConversations.eventId}
         where ${aiConversations.id} = ${table.conversationId} and ${events.userId} = ${authenticatedUserId}
       )`,
-      withCheck: sql`exists (
+    }),
+    // Only `role = 'user'` can be inserted by the client. Assistant/system/
+    // tool messages are written by a privileged (service-role) Server
+    // Action after calling the model, so history/tool calls can't be
+    // forged from the client. No update/delete policy — messages are
+    // immutable once written.
+    pgPolicy("ai_messages_insert_own_user_message", {
+      for: "insert",
+      to: authenticatedRole,
+      withCheck: sql`${table.role} = 'user' and exists (
         select 1 from ${aiConversations}
         join ${events} on ${events.id} = ${aiConversations.eventId}
         where ${aiConversations.id} = ${table.conversationId} and ${events.userId} = ${authenticatedUserId}
@@ -373,6 +396,33 @@ export const aiMessages = pgTable(
 // ---------------------------------------------------------------------------
 
 export const vendorStatusEnum = pgEnum("vendor_status", ["pendente", "aprovado", "suspenso"]);
+
+// Moderation state lives outside `vendors` on purpose: RLS can't compare a
+// row's OLD vs NEW value, so an owner with UPDATE on `vendors` could set
+// their own `status` straight to 'aprovado' if it lived there. By keeping it
+// in a table the owner has no insert/update policy for, only the service
+// role (moderation tooling) can ever change it — the vendor-creation Server
+// Action must insert this row (status = 'pendente') using the service-role
+// client, alongside the `vendors` row itself.
+export const vendorModeration = pgTable(
+  "vendor_moderation",
+  {
+    vendorId: uuid("vendor_id")
+      .primaryKey()
+      .references((): AnyPgColumn => vendors.id, { onDelete: "cascade" }),
+    status: vendorStatusEnum("status").notNull().default("pendente"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  () => [
+    // Status isn't sensitive on its own (just workflow state); gating the
+    // actual profile content is `vendors`' own select policy below.
+    pgPolicy("vendor_moderation_select_all", {
+      for: "select",
+      to: [anonRole, authenticatedRole],
+      using: sql`true`,
+    }),
+  ],
+).enableRLS();
 
 // `organization_id` nullable from day one — an organizadora (Fase 2) can own
 // a vendor profile without redesigning this table, per docs/architecture.md.
@@ -389,7 +439,6 @@ export const vendors = pgTable(
     displayName: text("display_name").notNull(),
     description: text("description"),
     portfolioUrls: jsonb("portfolio_urls").notNull().default(sql`'[]'::jsonb`),
-    status: vendorStatusEnum("status").notNull().default("pendente"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -398,26 +447,24 @@ export const vendors = pgTable(
     pgPolicy("vendors_select_public_approved", {
       for: "select",
       to: [anonRole, authenticatedRole],
-      using: sql`${table.status} = 'aprovado'`,
+      using: sql`exists (select 1 from ${vendorModeration} where ${vendorModeration.vendorId} = ${table.id} and ${vendorModeration.status} = 'aprovado')`,
     }),
     pgPolicy("vendors_select_own", {
       for: "select",
       to: authenticatedRole,
       using: sql`${table.ownerUserId} = ${authenticatedUserId}`,
     }),
+    // See the organization_id note on `events` above — same MVP restriction.
     pgPolicy("vendors_insert_own", {
       for: "insert",
       to: authenticatedRole,
-      withCheck: sql`${table.ownerUserId} = ${authenticatedUserId}`,
+      withCheck: sql`${table.ownerUserId} = ${authenticatedUserId} and ${table.organizationId} is null`,
     }),
     pgPolicy("vendors_update_own", {
       for: "update",
       to: authenticatedRole,
-      using: sql`${table.ownerUserId} = ${authenticatedUserId}`,
-      // Moderation field: a vendor can edit their own profile but not
-      // self-approve. Enforce in the Server Action, not just here — RLS
-      // withCheck can't easily diff old vs new row without a trigger.
-      withCheck: sql`${table.ownerUserId} = ${authenticatedUserId}`,
+      using: sql`${table.ownerUserId} = ${authenticatedUserId} and ${table.organizationId} is null`,
+      withCheck: sql`${table.ownerUserId} = ${authenticatedUserId} and ${table.organizationId} is null`,
     }),
   ],
 ).enableRLS();
@@ -437,7 +484,12 @@ export const vendorCategoryLinks = pgTable(
     pgPolicy("vendor_category_links_select_public_or_own", {
       for: "select",
       to: [anonRole, authenticatedRole],
-      using: sql`exists (select 1 from ${vendors} where ${vendors.id} = ${table.vendorId} and (${vendors.status} = 'aprovado' or ${vendors.ownerUserId} = ${authenticatedUserId}))`,
+      using: sql`exists (
+        select 1 from ${vendors}
+        left join ${vendorModeration} on ${vendorModeration.vendorId} = ${vendors.id}
+        where ${vendors.id} = ${table.vendorId}
+          and (${vendorModeration.status} = 'aprovado' or ${vendors.ownerUserId} = ${authenticatedUserId})
+      )`,
     }),
     pgPolicy("vendor_category_links_manage_own", {
       for: "all",
@@ -463,10 +515,21 @@ export const vendorLocations = pgTable(
   },
   (table) => [
     index("vendor_locations_vendor_id_idx").on(table.vendorId),
+    check("vendor_locations_latitude_range", sql`${table.latitude} is null or ${table.latitude} between -90 and 90`),
+    check(
+      "vendor_locations_longitude_range",
+      sql`${table.longitude} is null or ${table.longitude} between -180 and 180`,
+    ),
+    check("vendor_locations_service_radius_non_negative", sql`${table.serviceRadiusKm} >= 0`),
     pgPolicy("vendor_locations_select_public_or_own", {
       for: "select",
       to: [anonRole, authenticatedRole],
-      using: sql`exists (select 1 from ${vendors} where ${vendors.id} = ${table.vendorId} and (${vendors.status} = 'aprovado' or ${vendors.ownerUserId} = ${authenticatedUserId}))`,
+      using: sql`exists (
+        select 1 from ${vendors}
+        left join ${vendorModeration} on ${vendorModeration.vendorId} = ${vendors.id}
+        where ${vendors.id} = ${table.vendorId}
+          and (${vendorModeration.status} = 'aprovado' or ${vendors.ownerUserId} = ${authenticatedUserId})
+      )`,
     }),
     pgPolicy("vendor_locations_manage_own", {
       for: "all",
@@ -496,10 +559,16 @@ export const vendorPriceTables = pgTable(
   },
   (table) => [
     index("vendor_price_tables_vendor_id_idx").on(table.vendorId),
+    check("vendor_price_tables_price_non_negative", sql`${table.price} >= 0`),
     pgPolicy("vendor_price_tables_select_public_or_own", {
       for: "select",
       to: [anonRole, authenticatedRole],
-      using: sql`exists (select 1 from ${vendors} where ${vendors.id} = ${table.vendorId} and (${vendors.status} = 'aprovado' or ${vendors.ownerUserId} = ${authenticatedUserId}))`,
+      using: sql`exists (
+        select 1 from ${vendors}
+        left join ${vendorModeration} on ${vendorModeration.vendorId} = ${vendors.id}
+        where ${vendors.id} = ${table.vendorId}
+          and (${vendorModeration.status} = 'aprovado' or ${vendors.ownerUserId} = ${authenticatedUserId})
+      )`,
     }),
     pgPolicy("vendor_price_tables_manage_own", {
       for: "all",
@@ -544,11 +613,14 @@ export const reviews = pgTable(
       to: authenticatedRole,
       withCheck: sql`${table.authorUserId} = ${authenticatedUserId} and exists (select 1 from ${events} where ${events.id} = ${table.eventId} and ${events.userId} = ${authenticatedUserId})`,
     }),
+    // withCheck re-validates event ownership against the *new* event_id —
+    // without it, a valid review could be re-pointed at another user's
+    // event by updating `event_id` alone.
     pgPolicy("reviews_update_own", {
       for: "update",
       to: authenticatedRole,
       using: sql`${table.authorUserId} = ${authenticatedUserId}`,
-      withCheck: sql`${table.authorUserId} = ${authenticatedUserId}`,
+      withCheck: sql`${table.authorUserId} = ${authenticatedUserId} and exists (select 1 from ${events} where ${events.id} = ${table.eventId} and ${events.userId} = ${authenticatedUserId})`,
     }),
     pgPolicy("reviews_delete_own", {
       for: "delete",
