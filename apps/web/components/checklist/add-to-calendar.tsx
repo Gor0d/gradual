@@ -1,8 +1,9 @@
 "use client";
 
-import { CalendarPlus, Download } from "lucide-react";
+import { CalendarPlus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { buildGoogleCalendarUrl, buildIcsFile, type CalendarEventInput } from "@/lib/calendar/ics";
 
 type AddToCalendarProps = {
@@ -31,15 +32,20 @@ export function AddToCalendar({ id, event }: AddToCalendarProps) {
   }
 
   return (
-    <div className="flex items-center gap-1">
-      <Button variant="ghost" size="sm" asChild>
-        <a href={buildGoogleCalendarUrl(event)} target="_blank" rel="noopener noreferrer">
-          <CalendarPlus /> Google Calendar
-        </a>
-      </Button>
-      <Button variant="ghost" size="sm" onClick={downloadIcs}>
-        <Download /> .ics
-      </Button>
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" aria-label="Adicionar ao calendário">
+          <CalendarPlus />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem asChild>
+          <a href={buildGoogleCalendarUrl(event)} target="_blank" rel="noopener noreferrer">
+            Google Calendar
+          </a>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={downloadIcs}>Baixar .ics</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

@@ -19,14 +19,14 @@ export default async function AssistantPage() {
   const messages = await getMessagesForDisplay(supabase, conversationId);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col px-6 py-12 text-foreground">
-      <h1 className="text-2xl font-semibold tracking-tight">Assistente</h1>
+    <div className="flex h-full flex-col">
+      <h1 className="font-serif text-2xl italic tracking-tight">Assistente</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         Pergunte sobre seu checklist, peça pra criar, reagendar ou cancelar tarefas.
       </p>
       <div className="mt-6 flex-1">
         <AssistantChat eventId={eventId} initialMessages={messages} />
       </div>
-    </main>
+    </div>
   );
 }

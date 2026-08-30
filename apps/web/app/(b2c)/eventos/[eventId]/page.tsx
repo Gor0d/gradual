@@ -1,9 +1,7 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { AddToCalendar } from "@/components/checklist/add-to-calendar";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { TaskRow } from "@/components/checklist/task-row";
 import { requireCurrentUser } from "@/lib/auth/require-user";
 import { cn } from "@/lib/utils";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -16,7 +14,7 @@ type EventRow = {
   state: string | null;
 };
 
-type TaskRow = {
+type TaskRecord = {
   id: string;
   title: string;
   description: string | null;
@@ -30,6 +28,31 @@ const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
   year: "numeric",
   timeZone: "UTC",
 });
+
+const shortDateFormatter = new Intl.DateTimeFormat("pt-BR", {
+  day: "2-digit",
+  month: "short",
+  timeZone: "UTC",
+});
+
+function daysUntil(dateIso: string): number {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const target = new Date(dateIso);
+  target.setUTCHours(0, 0, 0, 0);
+  return Math.round((target.getTime() - today.getTime()) / 86_400_000);
+}
+
+function isOverdue(dueDateIso: string): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  return dueDateIso.slice(0, 10) < today;
+}
+
+function countdownLabel(daysLeft: number): string {
+  if (daysLeft > 0) return `faltam ${daysLeft} dias`;
+  if (daysLeft === 0) return "é hoje!";
+  return "já aconteceu";
+}
 
 type EventPageProps = {
   params: Promise<{ eventId: string }>;
@@ -51,72 +74,134 @@ export default async function EventPage({ params }: EventPageProps) {
     notFound();
   }
 
-  const { data: tasks } = await supabase
+  const { data: tasksData } = await supabase
     .from("tasks")
     .select("id, title, description, due_date, status")
     .eq("event_id", eventId)
     .order("due_date", { ascending: true })
-    .returns<TaskRow[]>();
+    .returns<TaskRecord[]>();
+
+  const tasks = tasksData ?? [];
+  const active = tasks.filter((task) => task.status !== "cancelada");
+  const completed = active.filter((task) => task.status === "concluida");
+  const cancelled = tasks.filter((task) => task.status === "cancelada");
+  const overdue = active.filter(
+    (task) => task.status !== "concluida" && task.due_date && isOverdue(task.due_date),
+  );
+  const upcoming = active.filter(
+    (task) => task.status !== "concluida" && !(task.due_date && isOverdue(task.due_date)),
+  );
+
+  const progressTotal = active.length;
+  const progressDone = completed.length;
+  const progressPct = progressTotal > 0 ? Math.round((progressDone / progressTotal) * 100) : 0;
+  const daysLeft = event.event_date ? daysUntil(event.event_date) : null;
+
+  function dueDateLabel(task: TaskRecord): string | null {
+    return task.due_date ? shortDateFormatter.format(new Date(task.due_date)) : null;
+  }
 
   return (
-    <main className="mx-auto max-w-2xl px-6 py-12 text-foreground">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">{event.title}</h1>
-          <p className="mt-1 text-muted-foreground">
-            {event.event_date ? dateFormatter.format(new Date(event.event_date)) : "Data a definir"}
-            {event.city ? ` — ${event.city}${event.state ? `/${event.state}` : ""}` : ""}
-          </p>
+    <div className="space-y-8">
+      <div>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="font-serif text-3xl italic tracking-tight">{event.title}</h1>
+            <p className="mt-1 text-muted-foreground">
+              {event.event_date ? dateFormatter.format(new Date(event.event_date)) : "Data a definir"}
+              {event.city ? ` — ${event.city}${event.state ? `/${event.state}` : ""}` : ""}
+              {daysLeft !== null ? ` · ${countdownLabel(daysLeft)}` : ""}
+            </p>
+          </div>
           {event.event_date ? (
-            <div className="-ml-3 mt-1">
-              <AddToCalendar
-                id={event.id}
-                event={{
-                  title: event.title,
-                  date: event.event_date,
-                  location: event.city ? `${event.city}${event.state ? `/${event.state}` : ""}` : null,
-                }}
-              />
-            </div>
+            <AddToCalendar
+              id={event.id}
+              event={{
+                title: event.title,
+                date: event.event_date,
+                location: event.city ? `${event.city}${event.state ? `/${event.state}` : ""}` : null,
+              }}
+            />
           ) : null}
         </div>
-        <Button asChild variant="outline">
-          <Link href="/assistente">Falar com o assistente</Link>
-        </Button>
+
+        {progressTotal > 0 ? (
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>Progresso do checklist</span>
+              <span>
+                {progressDone}/{progressTotal} concluídas
+              </span>
+            </div>
+            <div
+              className="mt-1.5 h-2 overflow-hidden rounded-full bg-muted"
+              role="progressbar"
+              aria-valuenow={progressPct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Progresso do checklist"
+            >
+              <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progressPct}%` }} />
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      <div className="mt-8 space-y-3">
-        {(tasks ?? []).map((task) => {
-          const isCancelled = task.status === "cancelada";
-          return (
-            <Card key={task.id} className={cn(isCancelled && "opacity-50")}>
-              <CardHeader className="flex-row items-center justify-between gap-4 space-y-0">
-                <CardTitle className={cn("text-base font-medium", isCancelled && "line-through")}>
-                  {task.title}
-                </CardTitle>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {isCancelled
-                    ? "Cancelada"
-                    : task.due_date
-                      ? dateFormatter.format(new Date(task.due_date))
-                      : "Sem prazo"}
-                </span>
-              </CardHeader>
-              {task.description ? (
-                <CardContent className="pt-0 text-sm text-muted-foreground">{task.description}</CardContent>
-              ) : null}
-              {!isCancelled && task.due_date ? (
-                <CardFooter className="-ml-3 pt-0">
-                  <AddToCalendar
-                    id={task.id}
-                    event={{ title: task.title, description: task.description, date: task.due_date }}
-                  />
-                </CardFooter>
-              ) : null}
-            </Card>
-          );
-        })}
+      {tasks.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Nenhuma tarefa no checklist ainda.</p>
+      ) : (
+        <>
+          <TaskGroup title="Atrasadas" tasks={overdue} dueDateLabel={dueDateLabel} emphasize />
+          <TaskGroup title="Próximas" tasks={upcoming} dueDateLabel={dueDateLabel} />
+          <TaskGroup title="Concluídas" tasks={completed} dueDateLabel={dueDateLabel} />
+          {cancelled.length > 0 ? (
+            <details>
+              <summary className="cursor-pointer text-xs font-extrabold uppercase tracking-wide text-muted-foreground">
+                Canceladas ({cancelled.length})
+              </summary>
+              <div className="mt-3 divide-y rounded-2xl border bg-card">
+                {cancelled.map((task) => (
+                  <TaskRow key={task.id} task={task} dueDateLabel={dueDateLabel(task)} />
+                ))}
+              </div>
+            </details>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TaskGroup({
+  title,
+  tasks,
+  dueDateLabel,
+  emphasize,
+}: {
+  title: string;
+  tasks: TaskRecord[];
+  dueDateLabel: (task: TaskRecord) => string | null;
+  emphasize?: boolean;
+}) {
+  if (tasks.length === 0) {
+    return null;
+  }
+
+  return (
+    <section>
+      <p
+        className={cn(
+          "text-xs font-extrabold uppercase tracking-wide",
+          emphasize ? "text-destructive" : "text-muted-foreground",
+        )}
+      >
+        {title} <span className="font-normal normal-case text-muted-foreground">({tasks.length})</span>
+      </p>
+      <div className="mt-3 divide-y rounded-2xl border bg-card">
+        {tasks.map((task) => (
+          <TaskRow key={task.id} task={task} dueDateLabel={dueDateLabel(task)} />
+        ))}
       </div>
-    </main>
+    </section>
   );
 }
