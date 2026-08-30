@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 
-import { Button } from "@/components/ui/button";
+import { RequestQuoteDialog } from "@/components/marketplace/request-quote-dialog";
+import { getCurrentUserOrNull } from "@/lib/auth/get-current-user-or-null";
 import { getVendorById } from "@/lib/marketplace/queries";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -14,7 +15,10 @@ type VendorPageProps = {
 export default async function VendorPage({ params }: VendorPageProps) {
   const { vendorId } = await params;
   const supabase = await createSupabaseServerClient();
-  const vendor = await getVendorById(supabase, vendorId);
+  const [vendor, currentUser] = await Promise.all([
+    getVendorById(supabase, vendorId),
+    getCurrentUserOrNull(),
+  ]);
 
   if (!vendor) {
     notFound();
@@ -57,9 +61,14 @@ export default async function VendorPage({ params }: VendorPageProps) {
             </div>
           </div>
           {vendor.hasOnRequest && !vendor.hasFixedPrice ? (
-            <Button size="lg" className="mb-1.5 font-bold">
-              Solicitar orçamento
-            </Button>
+            <RequestQuoteDialog
+              vendorId={vendor.id}
+              vendorName={vendor.name}
+              isAuthenticated={currentUser !== null}
+              defaultContactName={currentUser?.fullName ?? undefined}
+              defaultContactEmail={currentUser?.email}
+              className="mb-1.5 font-bold"
+            />
           ) : null}
         </div>
 
@@ -159,7 +168,14 @@ export default async function VendorPage({ params }: VendorPageProps) {
                   O valor varia conforme data, pacote e número de convidados — {vendor.name} responde pedidos de
                   orçamento diretamente.
                 </p>
-                <Button className="w-full font-bold">Solicitar orçamento</Button>
+                <RequestQuoteDialog
+                  vendorId={vendor.id}
+                  vendorName={vendor.name}
+                  isAuthenticated={currentUser !== null}
+                  defaultContactName={currentUser?.fullName ?? undefined}
+                  defaultContactEmail={currentUser?.email}
+                  className="w-full font-bold"
+                />
               </div>
             )}
           </div>
