@@ -15,3 +15,5 @@ next-env.d.ts
 # Machine-local symlinks created by `npx skills add` (absolute paths, not
 # portable) — the shared skill content lives in .agents/skills instead.
 .claude/skills/
+.dev-server.log
+.dev-server.err.log
