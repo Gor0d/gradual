@@ -1,0 +1,23 @@
+{
+  "name": "gradual",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @gradual/web",
+    "build": "npm run build --workspace @gradual/web",
+    "lint": "npm run lint --workspace @gradual/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "db:generate": "npm run db:generate --workspace @gradual/db-schema",
+    "db:migrate": "npm run db:migrate --workspace @gradual/db-schema",
+    "db:studio": "npm run db:studio --workspace @gradual/db-schema"
+  },
+  "engines": {
+    "node": ">=20.9.0",
+    "npm": ">=10.0.0"
+  }
+}
+
