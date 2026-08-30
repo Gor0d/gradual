@@ -1,8 +1,8 @@
 "use server";
 
 import type Anthropic from "@anthropic-ai/sdk";
-
-import { aiMessages } from "@gradual/db-schema";
+import { aiConversations, aiMessages, events } from "@gradual/db-schema";
+import { and, eq } from "drizzle-orm";
 
 import { ensureCurrentUser } from "@/lib/auth/ensure-user";
 import {
@@ -22,7 +22,7 @@ export type { ChatMessage } from "@/lib/ai/conversation";
 type EventRow = { id: string; title: string; event_date: string | null };
 
 export async function sendAssistantMessage(eventId: string, userMessage: string): Promise<ChatMessage[]> {
-  await ensureCurrentUser();
+  const user = await ensureCurrentUser();
   const supabase = await createSupabaseServerClient();
 
   const { data: event, error: eventError } = await supabase
@@ -47,6 +47,23 @@ export async function sendAssistantMessage(eventId: string, userMessage: string)
   const executeTool = createToolExecutor(supabase, eventId);
   const systemPrompt = buildSystemPrompt(event);
   const reply = await generateAssistantReply(systemPrompt, history, executeTool);
+
+  // Drizzle bypasses RLS entirely (it connects as the table owner), so this
+  // is the trust boundary: re-derive ownership straight from the DB right
+  // before the privileged write, instead of relying on the RLS-gated reads
+  // earlier in this function to have already guaranteed it. Don't remove
+  // this just because conversationId "can only" have come from an owned
+  // event above — that chain is exactly what a later refactor could break
+  // silently.
+  const [ownedConversation] = await db
+    .select({ id: aiConversations.id })
+    .from(aiConversations)
+    .innerJoin(events, eq(events.id, aiConversations.eventId))
+    .where(and(eq(aiConversations.id, conversationId), eq(events.userId, user.id)));
+
+  if (!ownedConversation) {
+    throw new Error("Conversa não pertence ao usuário autenticado.");
+  }
 
   // role = 'assistant' and tool_calls are only writable through the
   // service-role Drizzle client — ai_messages RLS has no insert policy for
