@@ -718,3 +718,85 @@ export const reviews = pgTable(
     }),
   ],
 ).enableRLS();
+
+// "Solicitar orçamento" from the marketplace. Contact info is captured
+// explicitly on the row (contact_name + at least one of contact_email/
+// contact_phone) instead of joining through `users` — users_select_own
+// means a vendor owner could never read the requester's email/phone
+// through the users table, so there'd be no way to reply otherwise.
+//
+// message/contact_* are immutable after creation by design: the vendor
+// owner's update policy only lets them change `status`, and — because RLS
+// can't restrict which columns an UPDATE touches, only which rows — that's
+// enforced with a column-level GRANT (see the migration's manually-added
+// `GRANT UPDATE (status)`, following the same pattern as organizations'
+// REVOKE/GRANT in migration 0001) rather than by the policy alone.
+export const vendorInquiryStatusEnum = pgEnum("vendor_inquiry_status", [
+  "new",
+  "viewed",
+  "contacted",
+  "closed",
+]);
+
+export const vendorInquiries = pgTable(
+  "vendor_inquiries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    vendorId: uuid("vendor_id")
+      .notNull()
+      .references(() => vendors.id, { onDelete: "cascade" }),
+    requesterUserId: uuid("requester_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // No organization_id: access derives from vendors.owner_user_id. Once
+    // org-owned vendors are common, extend authorization deliberately
+    // instead of bolting a tenant column on here.
+    eventId: uuid("event_id").references(() => events.id, { onDelete: "set null" }),
+    message: text("message").notNull(),
+    contactName: text("contact_name").notNull(),
+    contactEmail: text("contact_email"),
+    contactPhone: text("contact_phone"),
+    status: vendorInquiryStatusEnum("status").notNull().default("new"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("vendor_inquiries_vendor_id_created_at_idx").on(table.vendorId, table.createdAt.desc()),
+    index("vendor_inquiries_requester_user_id_created_at_idx").on(
+      table.requesterUserId,
+      table.createdAt.desc(),
+    ),
+    index("vendor_inquiries_event_id_idx")
+      .on(table.eventId)
+      .where(sql`${table.eventId} is not null`),
+    check(
+      "vendor_inquiries_contact_reachable",
+      sql`${table.contactEmail} is not null or ${table.contactPhone} is not null`,
+    ),
+    pgPolicy("vendor_inquiries_select_own_or_vendor_owner", {
+      for: "select",
+      to: authenticatedRole,
+      using: sql`${table.requesterUserId} = ${authenticatedUserId} or exists (
+        select 1 from ${vendors} where ${vendors.id} = ${table.vendorId} and ${vendors.ownerUserId} = ${authenticatedUserId}
+      )`,
+    }),
+    pgPolicy("vendor_inquiries_insert_own", {
+      for: "insert",
+      to: authenticatedRole,
+      withCheck: sql`${table.requesterUserId} = ${authenticatedUserId} and (
+        ${table.eventId} is null or exists (select 1 from ${events} where ${events.id} = ${table.eventId} and ${events.userId} = ${authenticatedUserId})
+      )`,
+    }),
+    // No update/delete policy for the requester — a sent inquiry is final
+    // on their side. The vendor owner's update policy is intentionally
+    // paired with a column-level grant restricting it to `status` (see the
+    // migration); the policy alone only controls which *rows* they can
+    // touch, not which *columns*.
+    pgPolicy("vendor_inquiries_update_status_by_vendor_owner", {
+      for: "update",
+      to: authenticatedRole,
+      using: sql`exists (select 1 from ${vendors} where ${vendors.id} = ${table.vendorId} and ${vendors.ownerUserId} = ${authenticatedUserId})`,
+      withCheck: sql`exists (select 1 from ${vendors} where ${vendors.id} = ${table.vendorId} and ${vendors.ownerUserId} = ${authenticatedUserId})`,
+    }),
+  ],
+).enableRLS();
