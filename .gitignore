@@ -12,3 +12,6 @@ coverage/
 next-env.d.ts
 .DS_Store
 .claude/settings.local.json
+# Machine-local symlinks created by `npx skills add` (absolute paths, not
+# portable) — the shared skill content lives in .agents/skills instead.
+.claude/skills/
