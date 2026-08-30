@@ -12,6 +12,16 @@ Contexto de produto e arquitetura completos em [`docs/architecture.md`](./archit
 - Toda tabela nova com `organization_id` ou `user_id` precisa de RLS policy no mesmo PR que a cria — nunca depender só de filtro na aplicação para isolamento multi-tenant.
 - Modo escuro/claro via tokens de cor semânticos (`prefers-color-scheme` + `color-scheme`), nunca cor literal espalhada pelos componentes.
 
+## Acesso a dados: RLS só vale se a query passar pelo papel certo
+
+`packages/db-schema` já vem com RLS revisada tabela a tabela (ver `docs/architecture.md`). Isso só protege alguma coisa se as queries em runtime realmente passarem pelos papéis `authenticated`/`anon` do Postgres — daí a regra:
+
+- **Operações do usuário** (o formando cria um evento, escreve uma mensagem, avalia um fornecedor, etc.) — sempre via `lib/supabase/server.ts` (Server Components/Actions) ou `lib/supabase/client.ts` (client components), usando `@supabase/supabase-js`. Esse client autentica com o JWT da sessão, roda como `authenticated`, e a RLS é quem decide o que ele pode ler/escrever.
+- **Operações privilegiadas** (moderação de fornecedor, gravar resposta do assistente de IA, qualquer coisa documentada no schema como "service-role Server Action") — via `lib/db/client.ts` (Drizzle sobre `DATABASE_URL`). Essa conexão autentica como `postgres`, dono das tabelas, e **ignora RLS por completo** — é isso que permite, por exemplo, `vendor_moderation` só ser escrita ali.
+- **Nunca** use `lib/db/client.ts` para uma mutação que deveria ser limitada pelo dono da linha — isso reintroduz exatamente os bugs que a revisão de RLS (ver histórico de commits `[b2c]`) fechou, só que por fora do banco.
+
+Na dúvida: se a policy da tabela tem `to: authenticated` com `using`/`withCheck` baseado em dono, é operação do usuário → Supabase client. Se a tabela não tem policy de escrita pra `authenticated` (ex: `vendor_moderation`, `organizations`), é operação privilegiada → Drizzle.
+
 ## Banco de dados (Drizzle)
 
 - **1 migration por PR**, sequencial. Nunca editar uma migration que já foi mergeada — criar uma nova.

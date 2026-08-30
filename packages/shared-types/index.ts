@@ -1,2 +1,4 @@
-// Shared types will be derived from the agreed database schema.
-export {};
+import type { InferSelectModel } from "drizzle-orm";
+import type { users } from "@gradual/db-schema";
+
+export type User = InferSelectModel<typeof users>;
