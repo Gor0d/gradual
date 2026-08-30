@@ -122,6 +122,6 @@ Dividir por **domínio vertical**, não por camada — cada ferramenta possui ro
 
 1. ~~Criar o repositório, `CLAUDE.md`, `AGENTS.md` e `docs/CONVENTIONS.md`.~~ (feito)
 2. ~~Persistir este documento em `docs/architecture.md`.~~ (feito)
-3. Modelar o schema inicial (`packages/db-schema`) cobrindo só o subconjunto B2C do MVP (users, event_types, events, checklist_templates/items, tasks, vendor_categories, vendors, vendor_locations, reviews).
+3. ~~Modelar o schema inicial (`packages/db-schema`) cobrindo só o subconjunto B2C do MVP (users, event_types, events, checklist_templates/items, tasks, vendor_categories, vendors, vendor_locations, reviews).~~ (proposto — ver `packages/db-schema/schema.ts`; RLS incluída na mesma migration; aguardando revisão do Codex e criação do projeto Supabase antes de gerar a migration)
 4. Prototipar o fluxo de onboarding + geração de checklist via Claude API antes de construir o marketplace completo — é o maior risco técnico do produto.
 5. Definir wireframes de baixa fidelidade do dashboard B2C e da busca de marketplace (grid de cards, filtro horizontal, chips removíveis, toggle mapa/lista — padrão Airbnb) antes de codar componentes.
