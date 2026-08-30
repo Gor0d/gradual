@@ -4,7 +4,13 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createSupabaseServerClient
 
 export type ToolExecutor = (name: string, input: unknown) => Promise<unknown>;
 
-type EventRow = { title: string; event_date: string | null; city: string | null; state: string | null };
+type EventRow = {
+  title: string;
+  event_date: string | null;
+  city: string | null;
+  state: string | null;
+  estimated_budget: string | null;
+};
 type TaskRow = { id: string; title: string; description: string | null; due_date: string | null; status: string };
 
 const brlFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
@@ -82,7 +88,7 @@ export function createToolExecutor(supabase: SupabaseServerClient, eventId: stri
 async function getEventStatus(supabase: SupabaseServerClient, eventId: string) {
   const { data: event, error: eventError } = await supabase
     .from("events")
-    .select("title, event_date, city, state")
+    .select("title, event_date, city, state, estimated_budget")
     .eq("id", eventId)
     .single<EventRow>();
   if (eventError || !event) {
@@ -99,7 +105,18 @@ async function getEventStatus(supabase: SupabaseServerClient, eventId: string) {
     throw tasksError;
   }
 
-  return { event, tasks: tasks ?? [] };
+  // estimated_budget comes back as a numeric string (Postgres numeric →
+  // string, to avoid float precision loss) — format it here so the model
+  // always has a ready pt-BR currency string instead of guessing from a raw
+  // "10000.00".
+  const estimatedBudget = event.estimated_budget !== null ? Number(event.estimated_budget) : null;
+  return {
+    event: {
+      ...event,
+      estimated_budget_formatted: estimatedBudget !== null ? brlFormatter.format(estimatedBudget) : null,
+    },
+    tasks: tasks ?? [],
+  };
 }
 
 async function findActiveTaskByTitle(supabase: SupabaseServerClient, eventId: string, title: string) {
@@ -162,55 +179,73 @@ async function rescheduleTask(supabase: SupabaseServerClient, eventId: string, i
     return { requires_confirmation: true, reason: "due_date_no_passado", due_date: dueDate };
   }
 
-  const { error } = await supabase
+  // PostgREST doesn't treat "zero rows matched" as an error — a nonexistent
+  // or foreign task_id would otherwise update nothing and still report
+  // { ok: true }. .select().maybeSingle() forces us to see whether a row
+  // actually came back.
+  const { data, error } = await supabase
     .from("tasks")
     .update({ due_date: toDueDateIso(dueDate) })
     .eq("id", taskId)
-    .eq("event_id", eventId);
+    .eq("event_id", eventId)
+    .select("id")
+    .maybeSingle<{ id: string }>();
 
   if (error) {
     throw error;
   }
-  return { ok: true };
+  return { ok: Boolean(data), reason: data ? undefined : "task_nao_encontrada" };
 }
 
 async function cancelTask(supabase: SupabaseServerClient, eventId: string, input: Record<string, unknown>) {
   const taskId = requireString(input, "task_id");
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("tasks")
     .update({ status: "cancelada" })
     .eq("id", taskId)
-    .eq("event_id", eventId);
+    .eq("event_id", eventId)
+    .select("id")
+    .maybeSingle<{ id: string }>();
 
   if (error) {
     throw error;
   }
-  return { ok: true };
+  return { ok: Boolean(data), reason: data ? undefined : "task_nao_encontrada" };
 }
 
 async function completeTask(supabase: SupabaseServerClient, eventId: string, input: Record<string, unknown>) {
   const taskId = requireString(input, "task_id");
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("tasks")
     .update({ status: "concluida" })
     .eq("id", taskId)
-    .eq("event_id", eventId);
+    .eq("event_id", eventId)
+    .select("id")
+    .maybeSingle<{ id: string }>();
 
   if (error) {
     throw error;
   }
-  return { ok: true };
+  return { ok: Boolean(data), reason: data ? undefined : "task_nao_encontrada" };
 }
 
 async function updateEventBudget(supabase: SupabaseServerClient, eventId: string, input: Record<string, unknown>) {
   const amount = requireNumber(input, "amount");
 
-  const { error } = await supabase.from("events").update({ estimated_budget: amount }).eq("id", eventId);
+  const { data, error } = await supabase
+    .from("events")
+    .update({ estimated_budget: amount })
+    .eq("id", eventId)
+    .select("id")
+    .maybeSingle<{ id: string }>();
 
   if (error) {
     throw error;
+  }
+  if (!data) {
+    return { ok: false, reason: "evento_nao_encontrado" };
   }
   // formatted is pre-computed so the model quotes a correct pt-BR currency
   // string instead of composing its own — see system-prompt.ts.
